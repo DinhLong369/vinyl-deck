@@ -1,0 +1,16 @@
+services:
+  api:
+    build: ./backend
+    ports: ["8080:8080"]
+    environment:
+      CORS_ORIGIN: "*"
+    volumes: ["records:/data"]
+  web:
+    build:
+      context: ./frontend
+      args:
+        NUXT_PUBLIC_API_BASE: http://localhost:8080
+    ports: ["3000:3000"]
+    depends_on: [api]
+volumes:
+  records:

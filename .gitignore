@@ -1,0 +1,7 @@
+node_modules/
+.nuxt/
+.output/
+backend/data/
+backend/vinyl-api
+backend/tmp/
+.env
