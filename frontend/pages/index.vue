@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { VinylRecord } from '~/composables/useRecords'
 
-const { records, loading, load, add, remove } = useRecords()
+const { records, loading, load, add, remove, reorder } = useRecords()
 const yt = useYouTubePlayer('yt-player', { onEnded: () => onTrackEnded() })
 
 const activeId = ref<string | null>(null)
@@ -136,6 +136,10 @@ function onTrackEnded() {
   step(1, true)
 }
 
+async function onReorder(ids: string[]) {
+  try { await reorder(ids) } catch { await load().catch(() => {}) } // server refused: show its order again
+}
+
 async function onRemove(r: VinylRecord) {
   if (r.id === activeId.value) { yt.pause(); armDown.value = false; activeId.value = null }
   await remove(r.id)
@@ -162,7 +166,7 @@ function fmt(s: number) {
 
 <template>
   <div class="app">
-    <Shelf :records="records" :active-id="activeId" :loading="loading" @select="select" @remove="onRemove" @add="showAdd = true" />
+    <Shelf :records="records" :active-id="activeId" :loading="loading" @select="select" @remove="onRemove" @reorder="onReorder" @add="showAdd = true" />
 
     <main class="stage">
       <button class="info" aria-label="About" @click="showInfo = true">i</button>

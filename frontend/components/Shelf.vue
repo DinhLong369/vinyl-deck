@@ -1,25 +1,179 @@
 <script setup lang="ts">
 import type { VinylRecord } from '~/composables/useRecords'
-defineProps<{ records: VinylRecord[]; activeId?: string | null; loading?: boolean }>()
-const emit = defineEmits<{ select: [VinylRecord]; remove: [VinylRecord]; add: [] }>()
+
+const props = defineProps<{ records: VinylRecord[]; activeId?: string | null; loading?: boolean }>()
+const emit = defineEmits<{ select: [VinylRecord]; remove: [VinylRecord]; add: []; reorder: [string[]] }>()
+
+// Local copy so the list can be rearranged live while dragging; resynced from props otherwise.
+const items = ref<VinylRecord[]>([])
+const dragId = ref<string | null>(null)
+watch(() => props.records, (r) => { if (!dragId.value) items.value = [...r] }, { immediate: true })
+
+const listEl = ref<HTMLElement | null>(null) // scroll container
+const itemsGroup = ref<{ $el: HTMLElement } | null>(null)
+const itemsEl = computed(() => itemsGroup.value?.$el ?? null) // positioned parent of the items
+const drag = reactive({ dx: 0, dy: 0 })
+
+const DRAG_THRESHOLD = 6 // px of mouse movement before a press becomes a drag
+const LONG_PRESS = 300 // ms hold before a touch becomes a drag (so normal swipes still scroll)
+
+let pending: { id: string; x: number; y: number; grabX: number; grabY: number; touch: boolean } | null = null
+let pressTimer: ReturnType<typeof setTimeout> | undefined
+let suppressClick = false
+let lastPointer = { x: 0, y: 0 }
+
+const horizontal = () => window.matchMedia('(max-width: 760px)').matches
+const elFor = (id: string) => itemsEl.value?.querySelector<HTMLElement>(`[data-id="${id}"]`) ?? null
+
+function onPointerDown(e: PointerEvent, r: VinylRecord) {
+  if (e.button !== 0 || (e.target as HTMLElement).closest('.del')) return
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  pending = { id: r.id, x: e.clientX, y: e.clientY, grabX: e.clientX - rect.left, grabY: e.clientY - rect.top, touch: e.pointerType !== 'mouse' }
+  lastPointer = { x: e.clientX, y: e.clientY }
+  window.addEventListener('pointermove', onPointerMove)
+  window.addEventListener('pointerup', onPointerUp)
+  window.addEventListener('pointercancel', onPointerUp)
+  if (pending.touch) pressTimer = setTimeout(() => startDrag(), LONG_PRESS)
+}
+
+function startDrag() {
+  if (!pending) return
+  dragId.value = pending.id
+  follow(lastPointer.x, lastPointer.y)
+}
+
+function onPointerMove(e: PointerEvent) {
+  if (!pending) return
+  lastPointer = { x: e.clientX, y: e.clientY }
+  if (!dragId.value) {
+    const moved = Math.hypot(e.clientX - pending.x, e.clientY - pending.y) > DRAG_THRESHOLD
+    if (!moved) return
+    if (pending.touch) return cleanup() // finger moved before the long-press: it's a scroll
+    startDrag()
+  }
+  e.preventDefault()
+  autoScroll(e.clientX, e.clientY)
+  moveTo(e.clientX, e.clientY)
+  follow(e.clientX, e.clientY)
+}
+
+// Where the dragged item should sit: count the other items whose centre is before the pointer.
+// Uses layout offsets (not getBoundingClientRect) so items mid-animation don't cause jitter.
+function moveTo(x: number, y: number) {
+  const base = itemsEl.value!.getBoundingClientRect()
+  const h = horizontal()
+  const p = h ? x : y
+  const others = items.value.filter(r => r.id !== dragId.value)
+  let index = 0
+  for (const r of others) {
+    const el = elFor(r.id)
+    if (!el) continue
+    const mid = h ? base.left + el.offsetLeft + el.offsetWidth / 2 : base.top + el.offsetTop + el.offsetHeight / 2
+    if (mid < p) index++
+  }
+  const from = items.value.findIndex(r => r.id === dragId.value)
+  if (from === index) return
+  const next = [...items.value]
+  const [moved] = next.splice(from, 1)
+  next.splice(index, 0, moved!)
+  items.value = next
+}
+
+// keep the dragged sleeve under the pointer, locked to the list's axis
+function follow(x: number, y: number) {
+  const el = dragId.value && elFor(dragId.value)
+  if (!el || !pending) return
+  const base = itemsEl.value!.getBoundingClientRect()
+  const h = horizontal()
+  drag.dx = h ? x - pending.grabX - (base.left + el.offsetLeft) : 0
+  drag.dy = h ? 0 : y - pending.grabY - (base.top + el.offsetTop)
+}
+
+function autoScroll(x: number, y: number) {
+  const list = listEl.value
+  if (!list) return
+  const r = list.getBoundingClientRect()
+  const EDGE = 48, STEP = 12
+  if (horizontal()) {
+    if (x < r.left + EDGE) list.scrollLeft -= STEP
+    else if (x > r.right - EDGE) list.scrollLeft += STEP
+  } else {
+    if (y < r.top + EDGE) list.scrollTop -= STEP
+    else if (y > r.bottom - EDGE) list.scrollTop += STEP
+  }
+}
+
+function onPointerUp() {
+  const wasDragging = !!dragId.value
+  cleanup()
+  if (!wasDragging) return
+  // swallow the click that follows a drag
+  suppressClick = true
+  setTimeout(() => { suppressClick = false })
+  const ids = items.value.map(r => r.id)
+  if (ids.join() !== props.records.map(r => r.id).join()) emit('reorder', ids)
+}
+
+function cleanup() {
+  clearTimeout(pressTimer)
+  pending = null
+  dragId.value = null
+  drag.dx = drag.dy = 0
+  window.removeEventListener('pointermove', onPointerMove)
+  window.removeEventListener('pointerup', onPointerUp)
+  window.removeEventListener('pointercancel', onPointerUp)
+}
+
+// while dragging with a finger, stop the page/shelf from scrolling
+function blockTouchScroll(e: TouchEvent) { if (dragId.value) e.preventDefault() }
+onMounted(() => window.addEventListener('touchmove', blockTouchScroll, { passive: false }))
+onBeforeUnmount(() => { cleanup(); window.removeEventListener('touchmove', blockTouchScroll) })
+
+function onClick(r: VinylRecord) {
+  if (suppressClick) return
+  emit('select', r)
+}
+
+// keyboard: Alt + arrow keys move the focused record
+function onKey(e: KeyboardEvent, r: VinylRecord) {
+  if (e.key === 'Enter') return emit('select', r)
+  if (!e.altKey) return
+  const dir = ['ArrowUp', 'ArrowLeft'].includes(e.key) ? -1 : ['ArrowDown', 'ArrowRight'].includes(e.key) ? 1 : 0
+  if (!dir) return
+  e.preventDefault()
+  const from = items.value.findIndex(x => x.id === r.id)
+  const to = from + dir
+  if (to < 0 || to >= items.value.length) return
+  const next = [...items.value]
+  ;[next[from], next[to]] = [next[to]!, next[from]!]
+  items.value = next
+  emit('reorder', next.map(x => x.id))
+  nextTick(() => elFor(r.id)?.focus())
+}
 </script>
 
 <template>
   <aside class="shelf">
-    <div class="list">
+    <div ref="listEl" class="list">
       <p v-if="loading && !records.length" class="empty">Loading the shelf…</p>
       <p v-else-if="!records.length" class="empty">The shelf is empty. Add a YouTube mix to get started.</p>
-      <div
-        v-for="r in records" :key="r.id" class="item" :class="{ active: r.id === activeId }"
-        role="button" tabindex="0" @click="emit('select', r)" @keydown.enter="emit('select', r)"
-      >
-        <div class="sleeve-wrap">
-          <div class="disc"><div class="vinyl" :style="{ '--cover': `url(${r.thumbnail})` }" /></div>
-          <div class="sleeve" role="img" :aria-label="r.title" :style="{ backgroundImage: `url(${r.thumbnail})` }" />
-          <button class="del" title="Remove from shelf" aria-label="Remove" @click.stop="emit('remove', r)">×</button>
+      <TransitionGroup ref="itemsGroup" tag="div" name="shelf" class="items" :class="{ sorting: !!dragId }">
+        <div
+          v-for="r in items" :key="r.id" :data-id="r.id"
+          class="item" :class="{ active: r.id === activeId, dragging: r.id === dragId }"
+          :style="r.id === dragId ? { '--dx': `${drag.dx}px`, '--dy': `${drag.dy}px` } : undefined"
+          role="button" tabindex="0" title="Click to play · drag to reorder (Alt + arrows)"
+          @pointerdown="onPointerDown($event, r)" @click="onClick(r)" @keydown="onKey($event, r)"
+          @contextmenu="dragId && $event.preventDefault()"
+        >
+          <div class="sleeve-wrap">
+            <div class="disc"><div class="vinyl" :style="{ '--cover': `url(${r.thumbnail})` }" /></div>
+            <div class="sleeve" role="img" :aria-label="r.title" :style="{ backgroundImage: `url(${r.thumbnail})` }" />
+            <button class="del" title="Remove from shelf" aria-label="Remove" @click.stop="emit('remove', r)">×</button>
+          </div>
+          <p class="name">{{ r.title }}</p>
         </div>
-        <p class="name">{{ r.title }}</p>
-      </div>
+      </TransitionGroup>
     </div>
     <button class="add" @click="emit('add')">＋ Add a record</button>
   </aside>
@@ -41,7 +195,17 @@ const emit = defineEmits<{ select: [VinylRecord]; remove: [VinylRecord]; add: []
 }
 .list { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 24px 16px 10px 22px; scrollbar-width: thin; scrollbar-color: #8a6448 transparent; }
 .empty { color: var(--muted); font-size: 13px; line-height: 1.5; }
-.item { margin-bottom: 26px; cursor: pointer; outline: none; }
+.items { position: relative; }
+.item { position: relative; margin-bottom: 26px; cursor: pointer; outline: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+/* other records slide out of the way */
+.shelf-move { transition: transform .28s cubic-bezier(.3,.7,.3,1); }
+/* the record being dragged follows the pointer (!important beats TransitionGroup's inline FLIP transform) */
+.item.dragging { z-index: 5; cursor: grabbing; transform: translate(var(--dx, 0), var(--dy, 0)) !important; transition: none !important; }
+.item.dragging .sleeve { transform: scale(1.05) rotate(-1.5deg); box-shadow: inset 0 0 0 1px rgba(255,255,255,.15), 0 18px 36px rgba(0,0,0,.6), 0 4px 8px rgba(0,0,0,.4); }
+.item.dragging .disc { transform: translateX(10px); }
+.item.dragging .name { opacity: .6; }
+.items.sorting .item:not(.dragging) { opacity: .85; }
+.items.sorting .del { display: none; }
 .sleeve-wrap { position: relative; width: 150px; height: 150px; }
 .sleeve {
   position: relative; z-index: 1; width: 150px; height: 150px; display: block; border-radius: 8px;
@@ -91,8 +255,10 @@ const emit = defineEmits<{ select: [VinylRecord]; remove: [VinylRecord]; add: []
 @media (max-width: 760px) {
   .shelf { width: 100%; height: auto; flex-direction: row; align-items: center; }
   .shelf::after { inset: 5px; }
-  .list { display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden; padding: 10px 12px; }
+  .list { overflow-x: auto; overflow-y: hidden; padding: 10px 12px; }
+  .items { display: flex; gap: 14px; }
   .item { width: 96px; flex-shrink: 0; margin: 0; }
+  .item.dragging .disc { transform: translateX(6px); }
   .sleeve-wrap, .sleeve { width: 72px; height: 72px; }
   .disc { left: 3px; top: 3px; width: 66px; height: 66px; transform: translateX(10px); }
   .item:hover .disc, .item:focus-visible .disc { transform: translateX(16px); }

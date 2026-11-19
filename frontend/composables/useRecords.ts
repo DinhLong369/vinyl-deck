@@ -74,5 +74,16 @@ export function useRecords() {
     if (!useApi) saveLocal()
   }
 
-  return { records, loading, load, add, remove }
+  /** Save a new shelf order (ids from first to last). Applied immediately, then persisted. */
+  async function reorder(ids: string[]) {
+    const byId = new Map(records.value.map(r => [r.id, r]))
+    const ordered = ids.map(id => byId.get(id)).filter((r): r is VinylRecord => !!r)
+    // keep anything the caller didn't mention (e.g. added meanwhile) at the end
+    for (const r of records.value) if (!ids.includes(r.id)) ordered.push(r)
+    records.value = ordered.map((r, i) => ({ ...r, position: i }))
+    if (useApi) await $fetch('/api/records/order', { baseURL: apiBase, method: 'PUT', body: { ids: records.value.map(r => r.id) } })
+    else saveLocal()
+  }
+
+  return { records, loading, load, add, remove, reorder }
 }
