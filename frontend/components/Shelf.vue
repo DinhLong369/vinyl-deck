@@ -134,6 +134,16 @@ function onClick(r: VinylRecord) {
   emit('select', r)
 }
 
+// horizontal shelf (narrow screens): let a normal mouse wheel scroll it sideways
+function onWheel(e: WheelEvent) {
+  const list = listEl.value
+  if (!list || !horizontal() || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
+  const max = list.scrollWidth - list.clientWidth
+  if (max <= 0) return
+  e.preventDefault()
+  list.scrollLeft = Math.min(max, Math.max(0, list.scrollLeft + e.deltaY))
+}
+
 // keyboard: Alt + arrow keys move the focused record
 function onKey(e: KeyboardEvent, r: VinylRecord) {
   if (e.key === 'Enter') return emit('select', r)
@@ -154,7 +164,7 @@ function onKey(e: KeyboardEvent, r: VinylRecord) {
 
 <template>
   <aside class="shelf">
-    <div ref="listEl" class="list">
+    <div ref="listEl" class="list" :class="{ sorting: !!dragId }" @wheel="onWheel">
       <p v-if="loading && !records.length" class="empty">Loading the shelf…</p>
       <p v-else-if="!records.length" class="empty">The shelf is empty. Add a YouTube mix to get started.</p>
       <TransitionGroup ref="itemsGroup" tag="div" name="shelf" class="items" :class="{ sorting: !!dragId }">
@@ -255,8 +265,18 @@ function onKey(e: KeyboardEvent, r: VinylRecord) {
 @media (max-width: 760px) {
   .shelf { width: 100%; height: auto; flex-direction: row; align-items: center; }
   .shelf::after { inset: 5px; }
-  .list { overflow-x: auto; overflow-y: hidden; padding: 10px 12px; }
-  .items { display: flex; gap: 14px; }
+  /* horizontal shelf: no native scrollbar (it appeared/disappeared and shifted the layout),
+     soft fade at the edges hints there is more, swipe / wheel / drag to scroll */
+  .list {
+    flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: 10px 0 10px 12px;
+    scrollbar-width: none; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scroll-padding-left: 12px;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 28px), transparent 100%);
+            mask-image: linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 28px), transparent 100%);
+  }
+  .list::-webkit-scrollbar { display: none; }
+  .list.sorting { scroll-snap-type: none; }
+  .items { display: flex; gap: 14px; width: max-content; padding-right: 28px; }
+  .item { scroll-snap-align: start; }
   .item { width: 96px; flex-shrink: 0; margin: 0; }
   .item.dragging .disc { transform: translateX(6px); }
   .sleeve-wrap, .sleeve { width: 72px; height: 72px; }
